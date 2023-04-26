@@ -1,10 +1,13 @@
-﻿using Azure;
+﻿using AutoMapper;
+using Azure;
 using GranCanariaAPI.Data;
 using GranCanariaAPI.Models;
 using GranCanariaAPI.Models.DTO;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.JsonPatch;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.ModelBinding;
+using Microsoft.EntityFrameworkCore;
 
 namespace GranCanariaAPI.Controllers
 {
@@ -16,25 +19,37 @@ namespace GranCanariaAPI.Controllers
     [ApiController]
     public class CanariaApiController : Controller
     {
-        [HttpGet]
-        [ProducesResponseType(StatusCodes.Status200OK)]
-        public ActionResult<IEnumerable<ApartmentDto>> GetApartment()
+        private readonly ApplicationDbContext _context;
+        private readonly IMapper _mapper;
+
+        public CanariaApiController(ApplicationDbContext context, IMapper mapper)
         {
-            return Ok(ApartmentStore.apartmentList);
+            _context = context;
+            _mapper = mapper;
         }
 
+        // Get all
+        [HttpGet]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        public async Task<ActionResult<IEnumerable<ApartmentDto>>> GetApartment()
+        {
+            IEnumerable<Apartment> apartmentList = await _context.Apartments.ToListAsync();
+            return Ok(apartmentList);
+        }
+
+        // Get by id
         [HttpGet("{id:int}", Name = "GetApartment")]
         [ProducesResponseType(StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status400BadRequest)]
         [ProducesResponseType(StatusCodes.Status404NotFound)]
-        public ActionResult<ApartmentDto> GetApartment(int id)
+        public async Task<ActionResult<ApartmentDto>> GetApartment(int id)
         {
             if (id == 0)
             {
                 return StatusCode(StatusCodes.Status400BadRequest); // 400
             }
 
-            var apartment = ApartmentStore.apartmentList.FirstOrDefault(ap => ap.ApartmentId == id);
+            var apartment = await _context.Apartments.FirstOrDefaultAsync(ap => ap.ApartmentId == id);
             if (apartment == null)
             {
                 return NotFound(); // 404
@@ -43,77 +58,90 @@ namespace GranCanariaAPI.Controllers
             return Ok(apartment);
         }
 
+        // Create
         [HttpPost]
         [ProducesResponseType(StatusCodes.Status201Created)]
         [ProducesResponseType(StatusCodes.Status400BadRequest)]
         [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-        public ActionResult<ApartmentDto> CreateApartment([FromBody] ApartmentDto apartmentDto)
+        public async Task<ActionResult<ApartmentDto>> CreateApartment([FromBody] ApartmentDto createDto)
         {
-            if (apartmentDto == null)
+            if (await _context.Apartments.FirstOrDefaultAsync(ap => ap.Name.ToLower() == createDto.Name.ToLower()) !=null)
             {
-                return BadRequest(apartmentDto);
+                ModelState.AddModelError("Custom Error", "This apartment already exist");
+                return BadRequest(ModelState);
             }
-            if (apartmentDto.ApartmentId > 0)
+            if (createDto.ApartmentId > 0)
             {
-                return StatusCode(StatusCodes.Status500InternalServerError);
+                return BadRequest(createDto);
             }
-            apartmentDto.ApartmentId = ApartmentStore.apartmentList.OrderByDescending(ap => ap.ApartmentId).FirstOrDefault().ApartmentId + 1;
-            ApartmentStore.apartmentList.Add(apartmentDto);
-            return CreatedAtRoute("GetApartment", new { id = apartmentDto.ApartmentId }, apartmentDto);
+
+            Apartment model = _mapper.Map<Apartment>(createDto);
+            await _context.Apartments.AddAsync(model);
+            await _context.SaveChangesAsync();
+            return CreatedAtRoute("GetApartment", new { id = model.ApartmentId }, model);
         }
 
+        // Delete
         [HttpDelete("{id:int}", Name = "DeleteApartment")]
         [ProducesResponseType(StatusCodes.Status204NoContent)]
         [ProducesResponseType(StatusCodes.Status400BadRequest)]
         [ProducesResponseType(StatusCodes.Status404NotFound)]
-        public IActionResult DeleteApartment(int id)
+        public async Task<IActionResult> DeleteApartment(int id)
         {
             if (id == null)
             {
                 return BadRequest();
             }
-            var apartment = ApartmentStore.apartmentList.FirstOrDefault(ap => ap.ApartmentId == id);
+            var apartment = await _context.Apartments.FirstOrDefaultAsync(ap => ap.ApartmentId == id);
             if (apartment == null)
             {
                 return NotFound();
             }
-            ApartmentStore.apartmentList.Remove(apartment);
+            _context.Apartments.Remove(apartment);
+            await _context.SaveChangesAsync();
             return NoContent();
         }
 
+        // Update
         [HttpPut("{id:int}", Name = "UpdateApartment")]
         [ProducesResponseType(StatusCodes.Status204NoContent)]
         [ProducesResponseType(StatusCodes.Status400BadRequest)]
-        public IActionResult UpdateApartment(int id, [FromBody] ApartmentDto apartmentDTO)
+        public async Task<IActionResult> UpdateApartment(int id, [FromBody] ApartmentDto updateDto)
         {
-            if (apartmentDTO == null || id != apartmentDTO.ApartmentId)
+            if (updateDto  == null || id != updateDto.ApartmentId)
             {
                 return BadRequest();
             }
-            var apartment = ApartmentStore.apartmentList.FirstOrDefault(ap=>ap.ApartmentId == id);
-            apartment.Name = apartmentDTO.Name;
+            //var apartment = _context.Apartments.FirstOrDefault(ap => ap.ApartmentId == id);
+
+            Apartment model = _mapper.Map<Apartment>(updateDto);
+            _context.Apartments.Update(model);
+            await _context.SaveChangesAsync();
             return NoContent();
         }
 
+        // Patch
         [HttpPatch("{id:int}", Name = "UpdatePartialApartment")]
         [ProducesResponseType(StatusCodes.Status204NoContent)]
         [ProducesResponseType(StatusCodes.Status400BadRequest)]
-        public IActionResult UpdatePartialApartment(int id, JsonPatchDocument<ApartmentDto> patchDTO)
+        public async Task<IActionResult> UpdatePartialApartment(int id, JsonPatchDocument<ApartmentUpdateDto> patchDTO)
         {
             if (patchDTO == null || id == 0)
             {
                 return BadRequest();
             }
-            var apartment = ApartmentStore.apartmentList.FirstOrDefault(ap => ap.ApartmentId == id);
+            var apartment = await _context.Apartments.AsNoTracking().FirstOrDefaultAsync(ap => ap.ApartmentId == id);
+            ApartmentUpdateDto apartmentUpdateDto = _mapper.Map<ApartmentUpdateDto>(apartment);
+
             if (apartment == null)
             {
                 return BadRequest();
             }
-            patchDTO.ApplyTo(apartment, ModelState);
-            if (!ModelState.IsValid)
-            {
-                return BadRequest(ModelState);
-            }
+
+            patchDTO.ApplyTo(apartmentUpdateDto, ModelState);
+            Apartment model = _mapper.Map<Apartment>(apartmentUpdateDto);
+            _context.Update(model);
+            await _context.SaveChangesAsync();
             return NoContent();
         }
     }
